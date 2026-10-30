@@ -8,13 +8,36 @@
 #include <cstdlib>
 #include <vector>
 
+// thread-block shape: BX threads along rows, BY threads along columns
+// each thread updates CPT (columns-per-thread) entries of the same row
+#define BX  32
+#define BY  8
+#define CPT 4
+
 ////////////////////////////////////////////////////////////////////////////////
 // Custom rank-1 update kernel
 // A <- A + alpha * x * y^T
 // Column-major storage: A(i,j) = A[j*m + i]
+//
+// threadIdx.x runs down a column, so a warp touches 32 consecutive floats of
+// A (coalesced). Each thread keeps alpha * x[i] in a register and reuses it
+// for CPT columns: j = j0, j0 + BY, ..., j0 + (CPT-1)*BY
 __global__ void ger_kernel(int m, int n, float alpha, const float* x, const float* y, float* A)
 {
-    // TODO: write your CUDA kernel here
+    const int i  = blockIdx.x * BX + threadIdx.x;          // row
+    const int j0 = blockIdx.y * (BY * CPT) + threadIdx.y;  // first column
+
+    if (i >= m) return;
+
+    const float ax = alpha * x[i];
+
+    #pragma unroll
+    for (int c = 0; c < CPT; ++c) {
+        const int j = j0 + c * BY;
+        if (j < n) {
+            A[(size_t)j * m + i] += ax * y[j];
+        }
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -106,9 +129,9 @@ int main(int argc, char** argv)
     std::printf("Matrix storage: column-major\n\n");
 
     // n1000: configure your kernel here
-    // TODO: the configuration below is a default that you must change
-    dim3 block(16, 16, 1);
-    dim3 grid( 1, 1, 1);
+    // one thread block covers a BX x (BY*CPT) tile of A
+    dim3 block(BX, BY, 1);
+    dim3 grid((m + BX - 1) / BX, (n + BY * CPT - 1) / (BY * CPT), 1);
     // end of TODO: kernel configuration
 
     cudaEvent_t start, stop;
